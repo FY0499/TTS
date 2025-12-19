@@ -17,15 +17,12 @@ class SignLanguageVideoGenerator:
         self.trim_start_buffer = 0.1
         self.trim_end_buffer = 0.1
         
-        # إعدادات الذكاء الاصطناعي
-        self.similarity_threshold = 0.75  # عتبة التشابه (75%)
-        self.fuzzy_threshold = 0.70       # عتبة البحث الضبابي
+        self.similarity_threshold = 0.75  
+        self.fuzzy_threshold = 0.70      
         
-        # بناء فهرس للبحث السريع
         self._build_search_index()
     
     def _build_search_index(self):
-        """بناء فهرس للبحث السريع والذكي"""
         self.normalized_dict = {}
         self.word_variants = {}
         
@@ -33,7 +30,6 @@ class SignLanguageVideoGenerator:
             normalized = self.normalize_text(key)
             self.normalized_dict[normalized] = (key, value)
             
-            # إنشاء متغيرات الكلمة
             variants = self._generate_word_variants(key)
             for variant in variants:
                 if variant not in self.word_variants:
@@ -41,22 +37,18 @@ class SignLanguageVideoGenerator:
                 self.word_variants[variant].append((key, value))
     
     def _generate_word_variants(self, word):
-        """توليد متغيرات الكلمة للبحث الذكي"""
         variants = set()
         normalized = self.normalize_text(word)
         variants.add(normalized)
         
-        # بدون ال
         if word.startswith('ال'):
             variants.add(word[2:])
             variants.add(self.normalize_text(word[2:]))
         
-        # مع ال
         if not word.startswith('ال'):
             variants.add('ال' + word)
             variants.add('ال' + normalized)
         
-        # بدون لاحقة
         without_suffix = self.remove_common_suffixes(word)
         if without_suffix != normalized:
             variants.add(without_suffix)
@@ -65,7 +57,6 @@ class SignLanguageVideoGenerator:
         return variants
     
     def levenshtein_distance(self, s1, s2):
-        """حساب مسافة التحرير بين كلمتين"""
         if len(s1) < len(s2):
             return self.levenshtein_distance(s2, s1)
         
@@ -85,22 +76,17 @@ class SignLanguageVideoGenerator:
         return previous_row[-1]
     
     def similarity_ratio(self, s1, s2):
-        """حساب نسبة التشابه بين كلمتين (0-1)"""
-        # استخدام SequenceMatcher للتشابه السريع
         ratio = SequenceMatcher(None, s1, s2).ratio()
         
-        # تحسين النتيجة باستخدام Levenshtein
         max_len = max(len(s1), len(s2))
         if max_len > 0:
             distance = self.levenshtein_distance(s1, s2)
             lev_ratio = 1 - (distance / max_len)
-            # متوسط الطريقتين
             ratio = (ratio + lev_ratio) / 2
         
         return ratio
     
     def find_fuzzy_match(self, word, threshold=None):
-        """البحث الذكي عن تطابق تقريبي"""
         if threshold is None:
             threshold = self.fuzzy_threshold
         
@@ -108,18 +94,14 @@ class SignLanguageVideoGenerator:
         best_match = None
         best_score = 0
         
-        # البحث في جميع المفاتيح
         for key in self.signs_dict.keys():
             normalized_key = self.normalize_text(key)
             
-            # حساب التشابه
             score = self.similarity_ratio(normalized_word, normalized_key)
             
-            # مكافأة إضافية إذا كانت الكلمة تحتوي على الكلمة المستهدفة
             if normalized_word in normalized_key or normalized_key in normalized_word:
                 score += 0.1
             
-            # مكافأة إضافية للكلمات ذات الطول المتقارب
             len_diff = abs(len(normalized_word) - len(normalized_key))
             if len_diff <= 2:
                 score += 0.05
@@ -131,11 +113,8 @@ class SignLanguageVideoGenerator:
         return best_match
     
     def find_contextual_match(self, word, context_words):
-        """البحث الذكي بناءً على السياق"""
         normalized_word = self.normalize_text(word)
         
-        # أولاً: البحث بناءً على السياق (الأولوية الأعلى)
-        # مثلاً: "حال" أو "الحال" بعد "كيف" تصير "حالك" أو "كيف حالك"
         context_patterns = {
             'كيف': {
                 'حال': ['كيف حالك', 'حالك'],
@@ -153,32 +132,27 @@ class SignLanguageVideoGenerator:
             },
         }
         
-        # نتحقق من الكلمات السابقة في السياق
         for ctx_word in context_words:
             normalized_ctx = self.normalize_text(ctx_word)
             if normalized_ctx in context_patterns:
                 word_map = context_patterns[normalized_ctx]
                 if normalized_word in word_map:
-                    # نجرب كل الاحتمالات بالترتيب
                     for mapped_word in word_map[normalized_word]:
                         match = self.find_best_match(mapped_word)
                         if match[0]:
                             return match
         
-        # ثانياً: محاولة البحث العادي
         direct_match = self.find_best_match(word)
         if direct_match[0]:
             return direct_match
         
-        # ثالثاً: البحث الضبابي
         fuzzy_match = self.find_fuzzy_match(word)
         if fuzzy_match:
             return fuzzy_match[1], fuzzy_match[0]
         
-        # رابعاً: محاولة تقسيم الكلمة
         parts = self.split_word_smart(word)
         if parts:
-            return None, None  # سيتم معالجتها في text_to_signs
+            return None, None  
         
         return None, None
     
@@ -187,7 +161,6 @@ class SignLanguageVideoGenerator:
         normalized_word1 = self.normalize_text(word1)
         normalized_word2 = self.normalize_text(word2)
         
-        # قائمة الأنماط السياقية الشائعة
         contextual_patterns = [
             # كيف + حال/الحال = كيف حالك
             (['كيف'], ['حال', 'الحال', 'حالك'], ['كيف حالك', 'حالك']),
@@ -228,7 +201,6 @@ class SignLanguageVideoGenerator:
         """فحص إذا اللاحقة قابلة للإزالة"""
         normalized = self.normalize_text(word)
         
-        # كلمات خاصة تنتهي بـ "ه" ولا نشيلها
         words_with_ha = [
             'اردنيه', 'جميله', 'كبيره', 'صغيره', 
             'طويله', 'قصيره', 'سريعه', 'بطيئه'
@@ -237,7 +209,6 @@ class SignLanguageVideoGenerator:
         if suffix == 'ه':
             base = normalized[:-1] if normalized.endswith('ه') else normalized
             
-            # صفات تنتهي بـ "ه" ولا نشيلها
             adjectives = [
                 'صعب', 'جميل', 'كبير', 'صغير', 
                 'طويل', 'قصير', 'سريع', 'بطيء'
@@ -245,26 +216,20 @@ class SignLanguageVideoGenerator:
             if base in adjectives:
                 return True
             
-            # كلمات خاصة ما نشيل منها "ه"
             if normalized in words_with_ha or normalized.endswith('يه'):
                 return False
             
             return True
         
-        # لواحق الضمائر دائماً قابلة للإزالة
         if suffix in ['ي', 'ك', 'ه', 'نا', 'كم', 'هم', 'هن', 'ها', 'كن']:
             return True
         
-        # باقي اللواحق
         return True
     
     def remove_common_suffixes(self, word):
-        """إزالة اللواحق الشائعة بذكاء"""
         normalized = self.normalize_text(word)
         
-        # اللواحق مرتبة من الأطول للأقصر (مهم!)
         suffixes = [
-            # ضمائر متصلة
             'كم',   # كتابكم
             'هم',   # كتابهم
             'هن',   # كتابهن
@@ -272,33 +237,24 @@ class SignLanguageVideoGenerator:
             'ها',   # كتابها
             'كن',   # كتابكن
             
-            # ضمائر مفردة
             'ي',    # أخوي، أختي، كتابي
             'ك',    # كتابك
             'ه',    # كتابه
             
-            # جمع
             'ون',   # معلمون
             'ين',   # معلمين
             'ات',   # معلمات
             
-            # مثنى
             'ان',   # معلمان
             'تان',  # معلمتان
             'تين',  # معلمتين
         ]
         
-        # نجرب كل لاحقة
         for suffix in suffixes:
             if normalized.endswith(suffix):
-                # الحد الأدنى لطول الجذر = 2 حروف
                 if len(normalized) > len(suffix) + 1:
-                    # فحص خاص للحرف "ي"
                     if suffix == 'ي':
-                        # لو الكلمة تنتهي بـ "ي" نشوف إذا هي جزء من الكلمة ولا لاحقة
-                        # مثلاً: "ليبي" ما نشيل منها "ي"، بس "أخوي" نشيلها
-                        
-                        # استثناءات: كلمات تنتهي بـ "ي" طبيعي (مش لاحقة)
+
                         exceptions_ending_with_i = [
                             'ليبي', 'مصري', 'عربي', 'اردني', 'سوري',
                             'ماضي', 'حالي', 'ثاني', 'باقي', 'كافي'
@@ -307,10 +263,8 @@ class SignLanguageVideoGenerator:
                         if normalized in exceptions_ending_with_i:
                             continue
                         
-                        # لو قبل "ي" في حرف علة، غالباً لاحقة
                         if len(normalized) >= 2:
                             char_before_i = normalized[-2]
-                            # أخوي، أختي، بيتي
                             if char_before_i in ['و', 'ت', 'ي']:
                                 if self.is_removable_suffix(word, suffix):
                                     return normalized[:-len(suffix)]
@@ -401,17 +355,14 @@ class SignLanguageVideoGenerator:
             return None, None
         _recursion_guard.add(word)
         
-        # 1. تطابق مباشر
         if word in self.signs_dict:
             return self.signs_dict[word], word
         
-        # 2. تطابق بعد التطبيع
         normalized_word = self.normalize_text(word)
         for key in self.signs_dict.keys():
             if self.normalize_text(key) == normalized_word:
                 return self.signs_dict[key], key
         
-        # 3. تحويلات سياقية ذكية للعبارات الشائعة
         contextual_mappings = {
             'كيف الحال': ['كيف حالك', 'كيف الحال'],
             'شو الاخبار': ['شو أخبارك', 'شو الأخبار'],
@@ -429,25 +380,20 @@ class SignLanguageVideoGenerator:
                         if self.normalize_text(key) == self.normalize_text(alt):
                             return self.signs_dict[key], key
         
-        # 4. إزالة اللواحق والبحث (الأذكى!)
         word_without_suffix = self.remove_common_suffixes(word)
         if word_without_suffix != normalized_word:
-            # بحث مباشر
             if word_without_suffix in self.signs_dict:
                 return self.signs_dict[word_without_suffix], word_without_suffix
             
-            # بحث بالتطبيع
             for key in self.signs_dict.keys():
                 key_normalized = self.normalize_text(key)
                 if word_without_suffix == key_normalized:
                     return self.signs_dict[key], key
                 
-                # محاولة إضافية: إزالة اللاحقة من المفتاح أيضاً
                 key_without_suffix = self.remove_common_suffixes(key)
                 if word_without_suffix == key_without_suffix:
                     return self.signs_dict[key], key
         
-        # 5. تطابق مع/بدون "ال"
         if not word.startswith('ال') and 'ال' + word not in _recursion_guard:
             word_with_al = 'ال' + word
             for key in self.signs_dict.keys():
@@ -461,7 +407,6 @@ class SignLanguageVideoGenerator:
                     if self.normalize_text(word_without_al) == self.normalize_text(key):
                         return self.signs_dict[key], key
         
-        # 6. تطابق متعدد الكلمات
         words_in_input = normalized_word.split()
         if len(words_in_input) > 1:
             for key in self.signs_dict.keys():
@@ -476,7 +421,6 @@ class SignLanguageVideoGenerator:
         """
         current_word = words[current_index]
         
-        # قائمة الكلمات اللي ممكن تكمل عبارات
         phrase_starters = {
             'كيف': ['حال', 'الحال', 'حالك', 'انت', 'أنت'],
             'شو': ['اخبار', 'الاخبار', 'اخبارك', 'أخبارك'],
@@ -489,21 +433,16 @@ class SignLanguageVideoGenerator:
         
         normalized_current = self.normalize_text(current_word)
         
-        # نشوف إذا الكلمة الحالية من الكلمات اللي بتبدأ عبارات
         if normalized_current not in phrase_starters:
             return False
         
-        # نشوف الكلمات اللي بعدها (لحد 3 كلمات)
         for i in range(1, min(max_check + 1, len(words) - current_index)):
             next_word = words[current_index + i]
             normalized_next = self.normalize_text(next_word)
             
-            # لو الكلمة اللي بعدها بتكمل العبارة
             if normalized_next in phrase_starters[normalized_current]:
-                # نتحقق إذا العبارة المركبة موجودة في القاموس
                 phrase = ' '.join(words[current_index:current_index + i + 1])
                 
-                # نجرب نلاقي العبارة (مع التحويلات السياقية)
                 video_path, matched_key = self.find_best_match(phrase)
                 if video_path:
                     return True
@@ -511,7 +450,6 @@ class SignLanguageVideoGenerator:
         return False
     
     def text_to_signs(self, text):
-        """تحويل النص إلى إشارات بذكاء اصطناعي"""
         words = text.strip().split()
         video_paths = []
         missing_words = []
@@ -523,46 +461,35 @@ class SignLanguageVideoGenerator:
             matched = False
             best_match = None
             
-            # البحث عن أطول عبارة ممكنة - نجرب كل الأطوال ونختار الأطول
             for phrase_length in range(min(5, len(words) - i), 0, -1):
                 if i in used_indices:
                     break
                 
                 phrase = ' '.join(words[i:i + phrase_length])
                 
-                # بحث مباشر
                 video_path, matched_key = self.find_best_match(phrase)
                 
                 if video_path and matched_key:
-                    # نتأكد إنه تطابق كامل
                     normalized_phrase = self.normalize_text(phrase)
                     normalized_matched = self.normalize_text(matched_key)
                     
-                    # لو تطابق كامل، نحفظه كأفضل match
                     if normalized_phrase == normalized_matched:
-                        # أول match نلاقيه هو الأطول (لأننا بنبدأ من الأطول)
                         best_match = {
                             'video_path': video_path,
                             'matched_key': matched_key,
                             'phrase': phrase,
                             'length': phrase_length
                         }
-                        # نوقف البحث - لقينا أطول match
                         break
             
-            # لو لقينا match، نتحقق إذا ممكن نكوّن عبارة أطول
             if best_match:
-                # لو الطول = 1 (كلمة واحدة)، نتحقق إذا ممكن تكمل مع الكلمات اللي بعدها
                 if best_match['length'] == 1:
                     can_extend = self.can_form_longer_phrase(i, words)
                     if can_extend:
-                        # ما نستخدم هاد الـ match، نكمل البحث
                         matched = False
-                        # نروح للكلمة الجاية بدون ما ناخذ هاي
                         i += 1
                         continue
                 
-                # استخدام الـ match
                 indices_to_use = set(range(i, i + best_match['length']))
                 if not indices_to_use.intersection(used_indices):
                     video_paths.append(best_match['video_path'])
@@ -578,11 +505,9 @@ class SignLanguageVideoGenerator:
                     i += best_match['length']
                     matched = True
             
-            # إذا ما لقينا تطابق مباشر، نحاول البحث الذكي
             if not matched and i not in used_indices:
                 current_word = words[i]
                 
-                # أولاً: نحاول البحث السياقي الذكي
                 context_words = []
                 if i > 0:
                     context_words.append(words[i-1])
