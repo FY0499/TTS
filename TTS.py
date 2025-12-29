@@ -18,9 +18,91 @@ class SignLanguageVideoGenerator:
         self.trim_end_buffer = 0.1
         
         self.similarity_threshold = 0.75  
-        self.fuzzy_threshold = 0.70      
+        self.fuzzy_threshold = 0.70
         
+        self._build_synonyms_map()
         self._build_search_index()
+    
+    def _build_synonyms_map(self):
+
+        self.synonyms = {
+            'طبيب': ['دكتور', 'الدكتور'],
+            'دكتور': ['طبيب', 'الطبيب'],
+            'معلم': ['استاذ', 'مدرس', 'الاستاذ', 'المدرس'],
+            'استاذ': ['معلم', 'مدرس'],
+            
+            'كيفك': ['كيف حالك', 'كيف الحال', 'شلونك'],
+            'شلونك': ['كيف حالك', 'كيفك'],
+            'شخبارك': ['شو أخبارك', 'أخبارك', 'ش أخبارك'],
+            'اخبارك': ['شو أخبارك', 'أخبارك'],
+            
+            'الصبح': ['صباح', 'صباح الخير'],
+            'المسا': ['مساء', 'مساء الخير'],
+            
+            'بيت': ['منزل', 'دار'],
+            'منزل': ['بيت', 'دار'],
+            'دار': ['بيت', 'منزل'],
+            'مدرسه': ['مدرسة', 'المدرسة'],
+            'جامعه': ['جامعة', 'الجامعة'],
+            'مستشفى': ['المستشفى'],
+            
+            'اب': ['أب', 'ابي', 'بابا', 'والد'],
+            'ام': ['أم', 'امي', 'ماما', 'والدة'],
+            'اخ': ['أخ', 'اخي', 'اخوي'],
+            'اخت': ['أخت', 'اختي'],
+            
+            'رايح': ['ذاهب', 'رح', 'اروح'],
+            'جاي': ['قادم', 'آتي', 'اجي'],
+            'ماشي': ['ذاهب', 'رايح'],
+            'واقف': ['وقف', 'يقف'],
+            
+            'حلو': ['جميل', 'زين', 'كويس'],
+            'كبير': ['ضخم', 'كبيره'],
+            'صغير': ['صغيره', 'زغير'],
+            'طويل': ['طويله'],
+            'قصير': ['قصيره'],
+            
+            'شو': ['ماذا', 'ايش', 'ش'],
+            'وين': ['أين', 'فين', 'اين'],
+            'ليش': ['لماذا', 'لما', 'ليه'],
+            'متى': ['امتى', 'إمتى'],
+            'كيف': ['ازاي', 'كيف'],
+            
+            'انت': ['أنت', 'إنت'],
+            'انتي': ['أنتي', 'إنتي', 'انتِ'],
+            'احنا': ['نحن', 'إحنا'],
+            
+            'اليوم': ['النهارده', 'هاليوم'],
+            'امس': ['أمس', 'البارحة'],
+            'بكره': ['غدا', 'بكرة', 'غداً'],
+        }
+        
+        self.reverse_synonyms = {}
+        for word, synonyms_list in self.synonyms.items():
+            for synonym in synonyms_list:
+                if synonym not in self.reverse_synonyms:
+                    self.reverse_synonyms[synonym] = []
+                self.reverse_synonyms[synonym].append(word)
+    
+    def find_synonym_match(self, word):
+        normalized_word = self.normalize_text(word)
+        
+        if normalized_word in self.synonyms:
+            for synonym in self.synonyms[normalized_word]:
+                normalized_synonym = self.normalize_text(synonym)
+
+                for key in self.signs_dict.keys():
+                    if self.normalize_text(key) == normalized_synonym:
+                        return self.signs_dict[key], key
+        
+        if normalized_word in self.reverse_synonyms:
+            for original_word in self.reverse_synonyms[normalized_word]:
+                normalized_original = self.normalize_text(original_word)
+                for key in self.signs_dict.keys():
+                    if self.normalize_text(key) == normalized_original:
+                        return self.signs_dict[key], key
+        
+        return None, None
     
     def _build_search_index(self):
         self.normalized_dict = {}
@@ -157,27 +239,16 @@ class SignLanguageVideoGenerator:
         return None, None
     
     def _check_contextual_phrases(self, word1, word2):
-        """فحص الأنماط السياقية وإرجاع قائمة بالعبارات المحتملة"""
+
         normalized_word1 = self.normalize_text(word1)
         normalized_word2 = self.normalize_text(word2)
         
         contextual_patterns = [
-            # كيف + حال/الحال = كيف حالك
             (['كيف'], ['حال', 'الحال', 'حالك'], ['كيف حالك', 'حالك']),
-            
-            # شو + اخبار/الاخبار = شو أخبارك
             (['شو', 'ش'], ['اخبار', 'الاخبار', 'اخبارك'], ['شو أخبارك', 'أخبارك']),
-            
-            # وين + رايح/جاي
             (['وين'], ['رايح', 'جاي'], ['وين رايح', 'وين جاي', 'رايح', 'جاي']),
-            
-            # صباح + الخير
             (['صباح'], ['الخير', 'خير'], ['صباح الخير']),
-            
-            # مساء + الخير
             (['مساء'], ['الخير', 'خير'], ['مساء الخير']),
-            
-            # تصبح + على + خير (سيتم معالجتها لاحقاً)
             (['تصبح'], ['علي', 'على'], ['تصبح على خير']),
         ]
         
@@ -198,12 +269,16 @@ class SignLanguageVideoGenerator:
         return text
     
     def is_removable_suffix(self, word, suffix):
-        """فحص إذا اللاحقة قابلة للإزالة"""
         normalized = self.normalize_text(word)
         
         words_with_ha = [
             'اردنيه', 'جميله', 'كبيره', 'صغيره', 
             'طويله', 'قصيره', 'سريعه', 'بطيئه'
+        ]
+        
+        common_roots = [
+            'بيت', 'دار', 'منزل', 'مدرس', 'جامع', 'مستشف',
+            'كتاب', 'قلم', 'ولد', 'بنت', 'اخ', 'اخت', 'اب', 'ام'
         ]
         
         if suffix == 'ه':
@@ -222,7 +297,9 @@ class SignLanguageVideoGenerator:
             return True
         
         if suffix in ['ي', 'ك', 'ه', 'نا', 'كم', 'هم', 'هن', 'ها', 'كن']:
-            return True
+            base = normalized[:-len(suffix)] if normalized.endswith(suffix) else normalized
+            if len(base) >= 2:  
+                return True
         
         return True
     
@@ -230,31 +307,18 @@ class SignLanguageVideoGenerator:
         normalized = self.normalize_text(word)
         
         suffixes = [
-            'كم',   # كتابكم
-            'هم',   # كتابهم
-            'هن',   # كتابهن
-            'نا',   # كتابنا
-            'ها',   # كتابها
-            'كن',   # كتابكن
-            
-            'ي',    # أخوي، أختي، كتابي
-            'ك',    # كتابك
-            'ه',    # كتابه
-            
-            'ون',   # معلمون
-            'ين',   # معلمين
-            'ات',   # معلمات
-            
-            'ان',   # معلمان
-            'تان',  # معلمتان
-            'تين',  # معلمتين
+            'كم', 'هم', 'هن', 'نا', 'ها', 'كن',
+            'ون', 'ين', 'ات',
+            'ان', 'تان', 'تين',
+            'ي', 'ك', 'ه',
         ]
         
         for suffix in suffixes:
             if normalized.endswith(suffix):
                 if len(normalized) > len(suffix) + 1:
+                    base = normalized[:-len(suffix)]
+                    
                     if suffix == 'ي':
-
                         exceptions_ending_with_i = [
                             'ليبي', 'مصري', 'عربي', 'اردني', 'سوري',
                             'ماضي', 'حالي', 'ثاني', 'باقي', 'كافي'
@@ -265,12 +329,13 @@ class SignLanguageVideoGenerator:
                         
                         if len(normalized) >= 2:
                             char_before_i = normalized[-2]
+
                             if char_before_i in ['و', 'ت', 'ي']:
                                 if self.is_removable_suffix(word, suffix):
-                                    return normalized[:-len(suffix)]
+                                    return base
                     
                     elif self.is_removable_suffix(word, suffix):
-                        return normalized[:-len(suffix)]
+                        return base
         
         return normalized
     
@@ -363,6 +428,10 @@ class SignLanguageVideoGenerator:
             if self.normalize_text(key) == normalized_word:
                 return self.signs_dict[key], key
         
+        synonym_match = self.find_synonym_match(word)
+        if synonym_match[0]:
+            return synonym_match
+        
         contextual_mappings = {
             'كيف الحال': ['كيف حالك', 'كيف الحال'],
             'شو الاخبار': ['شو أخبارك', 'شو الأخبار'],
@@ -416,9 +485,6 @@ class SignLanguageVideoGenerator:
         return None, None
     
     def can_form_longer_phrase(self, current_index, words, max_check=3):
-        """
-        تحقق إذا الكلمة الحالية ممكن تكوّن عبارة أطول مع الكلمات اللي بعدها
-        """
         current_word = words[current_index]
         
         phrase_starters = {
@@ -520,7 +586,6 @@ class SignLanguageVideoGenerator:
                     video_paths.append(video_path)
                     used_indices.add(i)
                     
-                    # البحث الضبابي
                     fuzzy_info = ""
                     if matched_key != current_word:
                         fuzzy_match = self.find_fuzzy_match(current_word)
@@ -536,7 +601,6 @@ class SignLanguageVideoGenerator:
                     i += 1
                     matched = True
                 
-                # معالجة الأرقام
                 if not matched and current_word.isdigit():
                     number_parts = self.split_number(current_word)
                     if number_parts:
@@ -551,7 +615,6 @@ class SignLanguageVideoGenerator:
                         used_indices.add(i)
                         matched = True
                 
-                # البحث الضبابي كخيار أخير
                 if not matched:
                     fuzzy_match = self.find_fuzzy_match(current_word, threshold=0.65)
                     if fuzzy_match:
@@ -564,7 +627,6 @@ class SignLanguageVideoGenerator:
                         })
                         matched = True
                 
-                # تقسيم الكلمة
                 if not matched:
                     word_parts = self.split_word_smart(current_word)
                     if word_parts:
@@ -573,7 +635,6 @@ class SignLanguageVideoGenerator:
                         for part in word_parts:
                             part_path, _ = self.find_best_match(part)
                             if not part_path:
-                                # محاولة البحث الضبابي للجزء
                                 fuzzy = self.find_fuzzy_match(part, threshold=0.65)
                                 if fuzzy:
                                     part_path = fuzzy[1]
