@@ -2,8 +2,9 @@ import json
 import os
 import re
 import base64
-import io
 import tempfile
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 import speech_recognition as sr
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from difflib import SequenceMatcher
@@ -16,67 +17,63 @@ class SignLanguageVideoGenerator:
         self.motion_threshold_percentile = 20
         self.trim_start_buffer = 0.1
         self.trim_end_buffer = 0.1
-        
         self.similarity_threshold = 0.75  
         self.fuzzy_threshold = 0.70
         
+        self._normalized_keys_cache = {
+            self.normalize_text(k): k for k in self.signs_dict.keys()
+        }
+        
         self._build_synonyms_map()
         self._build_search_index()
+        
+        self._executor = ThreadPoolExecutor(max_workers=4)
     
     def _build_synonyms_map(self):
-
         self.synonyms = {
             'طبيب': ['دكتور', 'الدكتور'],
             'دكتور': ['طبيب', 'الطبيب'],
             'معلم': ['استاذ', 'مدرس', 'الاستاذ', 'المدرس'],
             'استاذ': ['معلم', 'مدرس'],
-            
             'كيفك': ['كيف حالك', 'كيف الحال', 'شلونك'],
             'شلونك': ['كيف حالك', 'كيفك'],
             'شخبارك': ['شو أخبارك', 'أخبارك', 'ش أخبارك'],
             'اخبارك': ['شو أخبارك', 'أخبارك'],
-            
             'الصبح': ['صباح', 'صباح الخير'],
             'المسا': ['مساء', 'مساء الخير'],
-            
             'بيت': ['منزل', 'دار'],
             'منزل': ['بيت', 'دار'],
             'دار': ['بيت', 'منزل'],
             'مدرسه': ['مدرسة', 'المدرسة'],
             'جامعه': ['جامعة', 'الجامعة'],
             'مستشفى': ['المستشفى'],
-            
             'اب': ['أب', 'ابي', 'بابا', 'والد'],
             'ام': ['أم', 'امي', 'ماما', 'والدة'],
             'اخ': ['أخ', 'اخي', 'اخوي'],
             'اخت': ['أخت', 'اختي'],
-            
             'رايح': ['ذاهب', 'رح', 'اروح'],
             'جاي': ['قادم', 'آتي', 'اجي'],
             'ماشي': ['ذاهب', 'رايح'],
             'واقف': ['وقف', 'يقف'],
-            
             'حلو': ['جميل', 'زين', 'كويس'],
             'كبير': ['ضخم', 'كبيره'],
             'صغير': ['صغيره', 'زغير'],
             'طويل': ['طويله'],
             'قصير': ['قصيره'],
-            
             'شو': ['ماذا', 'ايش', 'ش'],
             'وين': ['أين', 'فين', 'اين'],
             'ليش': ['لماذا', 'لما', 'ليه'],
             'متى': ['امتى', 'إمتى'],
             'كيف': ['ازاي', 'كيف'],
-            
             'انت': ['أنت', 'إنت'],
             'انتي': ['أنتي', 'إنتي', 'انتِ'],
             'احنا': ['نحن', 'إحنا'],
-            
             'اليوم': ['النهارده', 'هاليوم'],
             'امس': ['أمس', 'البارحة'],
             'بكره': ['غدا', 'بكرة', 'غداً'],
         }
         
+        # Build reverse lookup
         self.reverse_synonyms = {}
         for word, synonyms_list in self.synonyms.items():
             for synonym in synonyms_list:
@@ -84,23 +81,32 @@ class SignLanguageVideoGenerator:
                     self.reverse_synonyms[synonym] = []
                 self.reverse_synonyms[synonym].append(word)
     
+    @lru_cache(maxsize=1024)
+    def normalize_text(self, text):
+        arabic_diacritics = re.compile(r'[ّ َ ً ُ ٌ ِ ٍ ْ ـ]')
+        text = re.sub(arabic_diacritics, '', text)
+        text = re.sub('[إأٱآا]', 'ا', text)
+        text = re.sub('ى', 'ي', text)
+        text = re.sub('ة', 'ه', text)
+        return text
+    
     def find_synonym_match(self, word):
         normalized_word = self.normalize_text(word)
         
+        # Quick lookup using normalized cache
         if normalized_word in self.synonyms:
             for synonym in self.synonyms[normalized_word]:
                 normalized_synonym = self.normalize_text(synonym)
-
-                for key in self.signs_dict.keys():
-                    if self.normalize_text(key) == normalized_synonym:
-                        return self.signs_dict[key], key
+                if normalized_synonym in self._normalized_keys_cache:
+                    key = self._normalized_keys_cache[normalized_synonym]
+                    return self.signs_dict[key], key
         
         if normalized_word in self.reverse_synonyms:
             for original_word in self.reverse_synonyms[normalized_word]:
                 normalized_original = self.normalize_text(original_word)
-                for key in self.signs_dict.keys():
-                    if self.normalize_text(key) == normalized_original:
-                        return self.signs_dict[key], key
+                if normalized_original in self._normalized_keys_cache:
+                    key = self._normalized_keys_cache[normalized_original]
+                    return self.signs_dict[key], key
         
         return None, None
     
@@ -138,6 +144,7 @@ class SignLanguageVideoGenerator:
         
         return variants
     
+    @lru_cache(maxsize=512)
     def levenshtein_distance(self, s1, s2):
         if len(s1) < len(s2):
             return self.levenshtein_distance(s2, s1)
@@ -157,6 +164,7 @@ class SignLanguageVideoGenerator:
         
         return previous_row[-1]
     
+    @lru_cache(maxsize=512)
     def similarity_ratio(self, s1, s2):
         ratio = SequenceMatcher(None, s1, s2).ratio()
         
@@ -176,9 +184,8 @@ class SignLanguageVideoGenerator:
         best_match = None
         best_score = 0
         
-        for key in self.signs_dict.keys():
-            normalized_key = self.normalize_text(key)
-            
+        # Use normalized cache for faster iteration
+        for normalized_key, key in self._normalized_keys_cache.items():
             score = self.similarity_ratio(normalized_word, normalized_key)
             
             if normalized_word in normalized_key or normalized_key in normalized_word:
@@ -232,77 +239,9 @@ class SignLanguageVideoGenerator:
         if fuzzy_match:
             return fuzzy_match[1], fuzzy_match[0]
         
-        parts = self.split_word_smart(word)
-        if parts:
-            return None, None  
-        
         return None, None
     
-    def _check_contextual_phrases(self, word1, word2):
-
-        normalized_word1 = self.normalize_text(word1)
-        normalized_word2 = self.normalize_text(word2)
-        
-        contextual_patterns = [
-            (['كيف'], ['حال', 'الحال', 'حالك'], ['كيف حالك', 'حالك']),
-            (['شو', 'ش'], ['اخبار', 'الاخبار', 'اخبارك'], ['شو أخبارك', 'أخبارك']),
-            (['وين'], ['رايح', 'جاي'], ['وين رايح', 'وين جاي', 'رايح', 'جاي']),
-            (['صباح'], ['الخير', 'خير'], ['صباح الخير']),
-            (['مساء'], ['الخير', 'خير'], ['مساء الخير']),
-            (['تصبح'], ['علي', 'على'], ['تصبح على خير']),
-        ]
-        
-        phrases_to_try = []
-        
-        for first_words, second_words, result_phrases in contextual_patterns:
-            if normalized_word1 in first_words and normalized_word2 in second_words:
-                phrases_to_try.extend(result_phrases)
-        
-        return phrases_to_try
-    
-    def normalize_text(self, text):
-        arabic_diacritics = re.compile(r'[ّ َ ً ُ ٌ ِ ٍ ْ ـ]')
-        text = re.sub(arabic_diacritics, '', text)
-        text = re.sub('[إأٱآا]', 'ا', text)
-        text = re.sub('ى', 'ي', text)
-        text = re.sub('ة', 'ه', text)
-        return text
-    
-    def is_removable_suffix(self, word, suffix):
-        normalized = self.normalize_text(word)
-        
-        words_with_ha = [
-            'اردنيه', 'جميله', 'كبيره', 'صغيره', 
-            'طويله', 'قصيره', 'سريعه', 'بطيئه'
-        ]
-        
-        common_roots = [
-            'بيت', 'دار', 'منزل', 'مدرس', 'جامع', 'مستشف',
-            'كتاب', 'قلم', 'ولد', 'بنت', 'اخ', 'اخت', 'اب', 'ام'
-        ]
-        
-        if suffix == 'ه':
-            base = normalized[:-1] if normalized.endswith('ه') else normalized
-            
-            adjectives = [
-                'صعب', 'جميل', 'كبير', 'صغير', 
-                'طويل', 'قصير', 'سريع', 'بطيء'
-            ]
-            if base in adjectives:
-                return True
-            
-            if normalized in words_with_ha or normalized.endswith('يه'):
-                return False
-            
-            return True
-        
-        if suffix in ['ي', 'ك', 'ه', 'نا', 'كم', 'هم', 'هن', 'ها', 'كن']:
-            base = normalized[:-len(suffix)] if normalized.endswith(suffix) else normalized
-            if len(base) >= 2:  
-                return True
-        
-        return True
-    
+    @lru_cache(maxsize=256)
     def remove_common_suffixes(self, word):
         normalized = self.normalize_text(word)
         
@@ -314,28 +253,19 @@ class SignLanguageVideoGenerator:
         ]
         
         for suffix in suffixes:
-            if normalized.endswith(suffix):
-                if len(normalized) > len(suffix) + 1:
-                    base = normalized[:-len(suffix)]
+            if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
+                base = normalized[:-len(suffix)]
+                
+                if suffix == 'ي':
+                    exceptions = ['ليبي', 'مصري', 'عربي', 'اردني', 'سوري', 'ماضي', 'حالي', 'ثاني', 'باقي', 'كافي']
+                    if normalized in exceptions:
+                        continue
                     
-                    if suffix == 'ي':
-                        exceptions_ending_with_i = [
-                            'ليبي', 'مصري', 'عربي', 'اردني', 'سوري',
-                            'ماضي', 'حالي', 'ثاني', 'باقي', 'كافي'
-                        ]
-                        
-                        if normalized in exceptions_ending_with_i:
-                            continue
-                        
-                        if len(normalized) >= 2:
-                            char_before_i = normalized[-2]
-
-                            if char_before_i in ['و', 'ت', 'ي']:
-                                if self.is_removable_suffix(word, suffix):
-                                    return base
-                    
-                    elif self.is_removable_suffix(word, suffix):
+                    char_before_i = normalized[-2]
+                    if char_before_i in ['و', 'ت', 'ي']:
                         return base
+                else:
+                    return base
         
         return normalized
     
@@ -345,72 +275,25 @@ class SignLanguageVideoGenerator:
         except:
             return []
         
-        if num < 0:
-            return []
-        
-        if str(num) in self.signs_dict:
-            return [str(num)]
+        if num < 0 or str(num) in self.signs_dict:
+            return [str(num)] if num >= 0 else []
         
         parts = []
         
-        if num >= 1000:
-            thousands = (num // 1000) * 1000
-            if str(thousands) in self.signs_dict:
-                parts.append(str(thousands))
-                num = num % 1000
-        
-        if num >= 100:
-            hundreds = (num // 100) * 100
-            if str(hundreds) in self.signs_dict:
-                parts.append(str(hundreds))
-                num = num % 100
-        
-        if num >= 10:
-            tens = (num // 10) * 10
-            if str(tens) in self.signs_dict:
-                parts.append(str(tens))
-                num = num % 10
+        for divisor in [1000, 100, 10]:
+            if num >= divisor:
+                place_value = (num // divisor) * divisor
+                if str(place_value) in self.signs_dict:
+                    parts.append(str(place_value))
+                    num = num % divisor
         
         if num > 0:
             if str(num) in self.signs_dict:
                 parts.append(str(num))
             else:
-                for digit in str(num):
-                    if digit in self.signs_dict:
-                        parts.append(digit)
+                parts.extend([d for d in str(num) if d in self.signs_dict])
         
         return parts
-    
-    def split_word_smart(self, word):
-        normalized = self.normalize_text(word)
-        common_prefixes = ['ال', 'و', 'ف', 'ب', 'ك', 'ل']
-        
-        for prefix in common_prefixes:
-            if normalized.startswith(prefix) and len(normalized) > len(prefix) + 2:
-                rest = normalized[len(prefix):]
-                if rest in self.signs_dict or self.normalize_text(rest) in [
-                    self.normalize_text(k) for k in self.signs_dict.keys()
-                ]:
-                    return [prefix, rest]
-        
-        if len(normalized) > 6:
-            mid = len(normalized) // 2
-            for split_point in range(mid - 1, mid + 2):
-                if 2 < split_point < len(normalized) - 2:
-                    part1 = normalized[:split_point]
-                    part2 = normalized[split_point:]
-                    
-                    found1 = part1 in self.signs_dict or any(
-                        self.normalize_text(k) == part1 for k in self.signs_dict.keys()
-                    )
-                    found2 = part2 in self.signs_dict or any(
-                        self.normalize_text(k) == part2 for k in self.signs_dict.keys()
-                    )
-                    
-                    if found1 and found2:
-                        return [part1, part2]
-        
-        return []
     
     def find_best_match(self, word, _recursion_guard=None):
         if _recursion_guard is None:
@@ -424,63 +307,32 @@ class SignLanguageVideoGenerator:
             return self.signs_dict[word], word
         
         normalized_word = self.normalize_text(word)
-        for key in self.signs_dict.keys():
-            if self.normalize_text(key) == normalized_word:
-                return self.signs_dict[key], key
+        if normalized_word in self._normalized_keys_cache:
+            key = self._normalized_keys_cache[normalized_word]
+            return self.signs_dict[key], key
         
         synonym_match = self.find_synonym_match(word)
         if synonym_match[0]:
             return synonym_match
         
-        contextual_mappings = {
-            'كيف الحال': ['كيف حالك', 'كيف الحال'],
-            'شو الاخبار': ['شو أخبارك', 'شو الأخبار'],
-            'وين انت': ['وين أنت', 'وينك'],
-            'كيف انت': ['كيف أنت', 'كيفك'],
-        }
-        
-        normalized_word_check = self.normalize_text(word)
-        for pattern, alternatives in contextual_mappings.items():
-            if self.normalize_text(pattern) == normalized_word_check:
-                for alt in alternatives:
-                    if alt in self.signs_dict:
-                        return self.signs_dict[alt], alt
-                    for key in self.signs_dict.keys():
-                        if self.normalize_text(key) == self.normalize_text(alt):
-                            return self.signs_dict[key], key
-        
         word_without_suffix = self.remove_common_suffixes(word)
         if word_without_suffix != normalized_word:
-            if word_without_suffix in self.signs_dict:
-                return self.signs_dict[word_without_suffix], word_without_suffix
-            
-            for key in self.signs_dict.keys():
-                key_normalized = self.normalize_text(key)
-                if word_without_suffix == key_normalized:
-                    return self.signs_dict[key], key
-                
-                key_without_suffix = self.remove_common_suffixes(key)
-                if word_without_suffix == key_without_suffix:
-                    return self.signs_dict[key], key
-        
-        if not word.startswith('ال') and 'ال' + word not in _recursion_guard:
-            word_with_al = 'ال' + word
-            for key in self.signs_dict.keys():
-                if self.normalize_text(word_with_al) == self.normalize_text(key):
-                    return self.signs_dict[key], key
+            if word_without_suffix in self._normalized_keys_cache:
+                key = self._normalized_keys_cache[word_without_suffix]
+                return self.signs_dict[key], key
         
         if word.startswith('ال') and len(word) > 2:
             word_without_al = word[2:]
-            if word_without_al not in _recursion_guard:
-                for key in self.signs_dict.keys():
-                    if self.normalize_text(word_without_al) == self.normalize_text(key):
-                        return self.signs_dict[key], key
-        
-        words_in_input = normalized_word.split()
-        if len(words_in_input) > 1:
-            for key in self.signs_dict.keys():
-                if words_in_input == self.normalize_text(key).split():
-                    return self.signs_dict[key], key
+            normalized_without_al = self.normalize_text(word_without_al)
+            if normalized_without_al in self._normalized_keys_cache:
+                key = self._normalized_keys_cache[normalized_without_al]
+                return self.signs_dict[key], key
+        elif not word.startswith('ال'):
+            word_with_al = 'ال' + word
+            normalized_with_al = self.normalize_text(word_with_al)
+            if normalized_with_al in self._normalized_keys_cache:
+                key = self._normalized_keys_cache[normalized_with_al]
+                return self.signs_dict[key], key
         
         return None, None
     
@@ -508,7 +360,6 @@ class SignLanguageVideoGenerator:
             
             if normalized_next in phrase_starters[normalized_current]:
                 phrase = ' '.join(words[current_index:current_index + i + 1])
-                
                 video_path, matched_key = self.find_best_match(phrase)
                 if video_path:
                     return True
@@ -524,54 +375,37 @@ class SignLanguageVideoGenerator:
         
         i = 0
         while i < len(words):
+            if i in used_indices:
+                i += 1
+                continue
+            
             matched = False
-            best_match = None
             
             for phrase_length in range(min(5, len(words) - i), 0, -1):
-                if i in used_indices:
-                    break
-                
                 phrase = ' '.join(words[i:i + phrase_length])
-                
                 video_path, matched_key = self.find_best_match(phrase)
                 
                 if video_path and matched_key:
-                    normalized_phrase = self.normalize_text(phrase)
-                    normalized_matched = self.normalize_text(matched_key)
+                    if phrase_length == 1 and self.can_form_longer_phrase(i, words):
+                        continue
                     
-                    if normalized_phrase == normalized_matched:
-                        best_match = {
-                            'video_path': video_path,
-                            'matched_key': matched_key,
-                            'phrase': phrase,
-                            'length': phrase_length
-                        }
+                    indices_to_use = set(range(i, i + phrase_length))
+                    if not indices_to_use.intersection(used_indices):
+                        video_paths.append(video_path)
+                        used_indices.update(indices_to_use)
+                        
+                        if matched_key != phrase:
+                            found_matches.append({
+                                'input': phrase,
+                                'matched': matched_key,
+                                'type': 'exact_match'
+                            })
+                        
+                        i += phrase_length
+                        matched = True
                         break
             
-            if best_match:
-                if best_match['length'] == 1:
-                    can_extend = self.can_form_longer_phrase(i, words)
-                    if can_extend:
-                        matched = False
-                        i += 1
-                        continue
-                
-                indices_to_use = set(range(i, i + best_match['length']))
-                if not indices_to_use.intersection(used_indices):
-                    video_paths.append(best_match['video_path'])
-                    used_indices.update(indices_to_use)
-                    
-                    if best_match['matched_key'] != best_match['phrase']:
-                        found_matches.append({
-                            'input': best_match['phrase'],
-                            'matched': best_match['matched_key'],
-                            'type': 'exact_match'
-                        })
-                    
-                    i += best_match['length']
-                    matched = True
-            
-            if not matched and i not in used_indices:
+            if not matched:
                 current_word = words[i]
                 
                 context_words = []
@@ -582,31 +416,21 @@ class SignLanguageVideoGenerator:
                 
                 video_path, matched_key = self.find_contextual_match(current_word, context_words)
                 
-                if video_path and matched_key:
+                if video_path:
                     video_paths.append(video_path)
                     used_indices.add(i)
-                    
-                    fuzzy_info = ""
                     if matched_key != current_word:
-                        fuzzy_match = self.find_fuzzy_match(current_word)
-                        if fuzzy_match and fuzzy_match[0] == matched_key:
-                            fuzzy_info = f" (تشابه: {fuzzy_match[2]:.0%})"
-                        
                         found_matches.append({
                             'input': current_word,
-                            'matched': matched_key + fuzzy_info,
-                            'type': 'smart_match'
+                            'matched': matched_key,
+                            'type': 'context_match'
                         })
-                    
-                    i += 1
                     matched = True
                 
-                if not matched and current_word.isdigit():
+                elif current_word.isdigit():
                     number_parts = self.split_number(current_word)
                     if number_parts:
-                        for part in number_parts:
-                            if part in self.signs_dict:
-                                video_paths.append(self.signs_dict[part])
+                        video_paths.extend([self.signs_dict[p] for p in number_parts if p in self.signs_dict])
                         found_matches.append({
                             'input': current_word,
                             'matched': ' + '.join(number_parts),
@@ -615,45 +439,17 @@ class SignLanguageVideoGenerator:
                         used_indices.add(i)
                         matched = True
                 
-                if not matched:
+                elif not matched:
                     fuzzy_match = self.find_fuzzy_match(current_word, threshold=0.65)
                     if fuzzy_match:
                         video_paths.append(fuzzy_match[1])
                         used_indices.add(i)
                         found_matches.append({
                             'input': current_word,
-                            'matched': f"{fuzzy_match[0]} (تشابه: {fuzzy_match[2]:.0%})",
-                            'type': 'fuzzy_match'
+                            'matched': f"{fuzzy_match[0]} ({fuzzy_match[2]:.0%})",
+                            'type': 'fuzzy'
                         })
                         matched = True
-                
-                if not matched:
-                    word_parts = self.split_word_smart(current_word)
-                    if word_parts:
-                        all_found = True
-                        temp_paths = []
-                        for part in word_parts:
-                            part_path, _ = self.find_best_match(part)
-                            if not part_path:
-                                fuzzy = self.find_fuzzy_match(part, threshold=0.65)
-                                if fuzzy:
-                                    part_path = fuzzy[1]
-                            
-                            if part_path:
-                                temp_paths.append(part_path)
-                            else:
-                                all_found = False
-                                break
-                        
-                        if all_found:
-                            video_paths.extend(temp_paths)
-                            used_indices.add(i)
-                            found_matches.append({
-                                'input': current_word,
-                                'matched': ' + '.join(word_parts),
-                                'type': 'word_split'
-                            })
-                            matched = True
                 
                 if not matched:
                     missing_words.append(current_word)
@@ -698,7 +494,7 @@ class SignLanguageVideoGenerator:
         
         motion_scores = []
         prev_frame = None
-        sample_rate = max(1, int(fps / 10))
+        sample_rate = max(1, int(fps / 10))  # Sample every 100ms
         
         frame_idx = 0
         while True:
@@ -788,7 +584,7 @@ class SignLanguageVideoGenerator:
                 
                 clips.append(clip)
             except Exception as e:
-                print(f"Error processing video {path}: {e}")
+                print(f"Error processing {path}: {e}")
                 continue
         
         if not clips:
@@ -804,7 +600,7 @@ class SignLanguageVideoGenerator:
             codec='libx264',
             audio_codec='aac',
             fps=target_fps,
-            preset='ultrafast',
+            preset='ultrafast',  
             bitrate='8000k',
             threads=4,
             logger=None
@@ -857,7 +653,7 @@ class SignLanguageVideoGenerator:
             if not video_paths:
                 return {
                     'success': False,
-                    'error': 'لا توجد إشارات متاحة للكلمات المدخلة',
+                    'error': 'لا توجد إشارات متاحة',
                     'recognized_text': recognized_text,
                     'video_base64': None,
                     'missing_words': missing_words,
@@ -870,7 +666,7 @@ class SignLanguageVideoGenerator:
             if not merged_video_path:
                 return {
                     'success': False,
-                    'error': 'فشل في دمج مقاطع الفيديو',
+                    'error': 'فشل في دمج الفيديو',
                     'recognized_text': recognized_text,
                     'video_base64': None,
                     'missing_words': missing_words,
@@ -893,7 +689,7 @@ class SignLanguageVideoGenerator:
             }
             
         except Exception as e:
-            print(f"Error in process_from_flutter: {e}")
+            print(f"Error: {e}")
             return {
                 'success': False,
                 'error': str(e),
@@ -902,3 +698,8 @@ class SignLanguageVideoGenerator:
                 'missing_words': [],
                 'found_matches': []
             }
+    
+    def __del__(self):
+        """Cleanup thread pool"""
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=False)
